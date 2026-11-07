@@ -1,0 +1,9 @@
+# macOS
+.DS_Store
+
+# 編輯器
+.vscode/
+.idea/
+
+# 原始下載壓縮檔
+files.zip
