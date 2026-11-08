@@ -140,6 +140,7 @@ button:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
   <div class="bar">
     <button id="bPass">跳過</button>
     <button id="bUndo">悔棋</button>
+    <button id="bResign">認輸</button>
     <button id="bView">俯視</button>
     <button id="bSnd">音效開</button>
     <button id="bNew" class="primary">新局</button>
@@ -163,11 +164,11 @@ button:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 
 <div class="scrim" id="result" hidden>
   <div class="sheet" role="dialog" aria-modal="true" aria-label="終局結果">
-    <h2>終局</h2>
+    <h2 id="rT">終局</h2>
     <p class="result-line"><span class="stone b"></span><span id="rB"></span></p>
     <p class="result-line"><span class="stone w"></span><span id="rW"></span></p>
     <p class="verdict" id="rV"></p>
-    <p class="note">目前以盤面現況計算，不會自動移除死子。若有死子，請先提光再按「跳過」。</p>
+    <p class="note" id="rNote">目前以盤面現況計算，不會自動移除死子。若有死子，請先提光再按「跳過」。</p>
     <div class="row"><button id="rClose">看盤面</button><button id="rAgain" class="primary">再來一局</button></div>
   </div>
 </div>
@@ -372,10 +373,21 @@ function mcts(root,color,moves,budget,token,getToken,done){
   }
   step();
 }
+// 電腦中盤認輸（參考 game-Go）：下滿一定手數後，面積大幅落後，
+// 且「被吃子明顯較多」或「盤面大致底定」，連續兩手都如此才投子。
+// 不用隨機對局勝率：大片空地時隨機對局會亂入，落後很多仍估出四成勝率。
+const RESIGN={minMoves:{9:24,13:40},margin:{9:10,13:18},capDiff:{9:4,13:8},settled:0.75,streak:2};
+function shouldResign(g,color){
+  if(S.mode!=='ai'||S.hist.length<RESIGN.minMoves[S.n]){S.bad=0;return false}
+  const sc=g.score(),lead=color===1?sc.b-sc.w-KOMI:sc.w+KOMI-sc.b;
+  const capDiff=S.cap[3-color]-S.cap[color],settled=(sc.b+sc.w)/g.N;
+  if(lead>-RESIGN.margin[S.n]||(capDiff<RESIGN.capDiff[S.n]&&settled<RESIGN.settled)){S.bad=0;return false}
+  return ++S.bad>=RESIGN.streak;
+}
 
 /* ================= 狀態 ================= */
 const S={n:13,sound:true,mode:'ai',level:1,human:1,g:null,probe:null,turn:1,passes:0,last:-1,over:false,
-  hist:[],thinking:false,cap:[0,0,0],pending:-1,token:0,toast:'',toastT:0};
+  hist:[],thinking:false,cap:[0,0,0],pending:-1,token:0,toast:'',toastT:0,bad:0,resigned:0};
 function loadPrefs(){
   try{
     const j=JSON.parse(localStorage.getItem('gonokuni')||'null');
@@ -1259,11 +1271,11 @@ function onTap(e){
 
 /* ================= 遊戲流程 ================= */
 function snapshot(){return{b:S.g.b.slice(),ko:S.g.ko,turn:S.turn,passes:S.passes,last:S.last,cap:S.cap.slice()}}
-function restore(s){S.g.b.set(s.b);S.g.ko=s.ko;S.turn=s.turn;S.passes=s.passes;S.last=s.last;S.cap=s.cap.slice();S.over=false}
+function restore(s){S.g.b.set(s.b);S.g.ko=s.ko;S.turn=s.turn;S.passes=s.passes;S.last=s.last;S.cap=s.cap.slice();S.over=false;S.resigned=0;S.bad=0}
 
 function newGame(){
   S.token++;S.g=new Go(S.n);S.probe=new Go(S.n);
-  S.turn=1;S.passes=0;S.last=-1;S.over=false;S.hist=[];S.cap=[0,0,0];S.thinking=false;S.pending=-1;
+  S.turn=1;S.passes=0;S.last=-1;S.over=false;S.hist=[];S.cap=[0,0,0];S.thinking=false;S.pending=-1;S.bad=0;S.resigned=0;
   if(boardN!==S.n)buildBoard(S.n);
   clearPieces();hideGhost();$('#result').hidden=true;
   zoom=1;refresh(-1);afterMove();
@@ -1306,7 +1318,8 @@ function updateStatus(){
 function updateButtons(){
   const myTurn=!S.over&&!S.thinking&&(S.mode==='two'||S.turn===S.human);
   $('#bPass').disabled=!myTurn;
-  $('#bUndo').disabled=!S.hist.length;
+  $('#bResign').disabled=!myTurn;
+  $('#bUndo').disabled=!S.hist.length&&!S.resigned;
 }
 function tryMove(i){
   if(!canTap())return;
@@ -1347,6 +1360,7 @@ function runAI(tok){
       refresh(mv);if(caps>0)toast('電腦吃掉了 '+caps+' 顆');afterMove();
     }
   };
+  if(shouldResign(g,color)){resignGame(color);return}
   if(S.passes>=1){
     const sc=g.score(),lead=color===1?sc.b-sc.w-KOMI:sc.w+KOMI-sc.b;
     if(lead>0){finish(null);return}
@@ -1367,6 +1381,7 @@ function endGame(){
   for(let i=0;i<S.g.N;i++){if(S.g.b[i]===1)sb++;else if(S.g.b[i]===2)sw++}
   for(const r of regs){if(r.owner===1)sb+=r.pts.length;else if(r.owner===2)sw+=r.pts.length}
   const wt=sw+KOMI,diff=Math.abs(sb-wt);
+  $('#rT').textContent='終局';$('#rNote').hidden=false;
   $('#rB').textContent='黑 '+sb+' 目';
   $('#rW').textContent='白 '+sw+' 目 + 貼目 '+KOMI+' = '+wt;
   let v;
@@ -1376,8 +1391,28 @@ function endGame(){
   if(S.mode==='ai'&&(sb>wt)!==(S.human===1))setTimeout(()=>sfx.lose(),900);else setTimeout(()=>sfx.win(),900);
   setTimeout(()=>{if(S.over)$('#result').hidden=false},900);
 }
+// loser 方投子認輸（電腦自動認輸或按「認輸」鈕）
+function resignGame(loser){
+  S.over=true;S.resigned=loser;S.pending=-1;S.thinking=false;S.token++;hideGhost();
+  refresh(-1);
+  const sc=S.g.score();
+  $('#rT').textContent='認輸';$('#rNote').hidden=true;
+  $('#rB').textContent='黑 '+sc.b+' 目';
+  $('#rW').textContent='白 '+sc.w+' 目 + 貼目 '+KOMI+' = '+(sc.w+KOMI);
+  let v;
+  if(S.mode==='ai')v=loser===S.human?'你認輸了，電腦獲勝':'電腦認輸了，你贏了！';
+  else v=nameOf(loser)+'方認輸，'+nameOf(3-loser)+'方獲勝';
+  $('#rV').textContent=v;
+  toast(S.mode==='ai'&&loser!==S.human?'電腦投子認輸':nameOf(loser)+'方認輸');
+  if(S.mode==='ai'&&loser===S.human)setTimeout(()=>sfx.lose(),600);else setTimeout(()=>sfx.win(),600);
+  setTimeout(()=>{if(S.over)$('#result').hidden=false},900);
+}
 function undo(){
   S.token++;S.thinking=false;
+  // 自己剛按認輸：只撤回認輸，不退棋
+  if(S.resigned&&S.resigned===S.turn&&(S.mode==='two'||S.turn===S.human)){
+    S.over=false;S.resigned=0;$('#result').hidden=true;refresh(-1);afterMove();return;
+  }
   if(!S.hist.length)return;
   let s;
   if(S.mode==='ai'){do{s=S.hist.pop()}while(S.hist.length&&s.turn!==S.human)}
@@ -1389,6 +1424,7 @@ function undo(){
 /* ================= 介面 ================= */
 $('#bPass').onclick=()=>{if(canTap())doPass()};
 $('#bUndo').onclick=undo;
+$('#bResign').onclick=()=>{if(canTap())resignGame(S.turn)};
 function sndLabel(){$('#bSnd').textContent=S.sound?'音效開':'音效關'}
 $('#bSnd').onclick=()=>{S.sound=!S.sound;sndLabel();savePrefs();if(S.sound)sfx.place()};
 sndLabel();
